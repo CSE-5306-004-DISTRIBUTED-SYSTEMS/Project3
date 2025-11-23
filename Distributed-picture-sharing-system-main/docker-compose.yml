@@ -1,0 +1,92 @@
+version: '3.8'
+
+services:
+  # HTTP Nodes
+  http-node1:
+    build:
+      context: ./http_nodes
+    environment:
+      - NODE_NAME=http-node1
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - http1-data:/data
+    ports:
+      - "5001:5000"
+
+  http-node2:
+    build:
+      context: ./http_nodes
+    environment:
+      - NODE_NAME=http-node2
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - http2-data:/data
+    ports:
+      - "5002:5000"
+
+  http-node3:
+    build:
+      context: ./http_nodes
+    environment:
+      - NODE_NAME=http-node3
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - http3-data:/data
+    ports:
+      - "5003:5000"
+
+  # gRPC Nodes
+  grpc-node1:
+    build:
+      context: ./grpc_nodes
+    environment:
+      - NODE_NAME=grpc-node1
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - grpc1-data:/data
+    ports:
+      - "50051:50051"
+
+  grpc-node2:
+    build:
+      context: ./grpc_nodes
+    environment:
+      - NODE_NAME=grpc-node2
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - grpc2-data:/data
+    ports:
+      - "50052:50051"
+
+  grpc-node3:
+    build:
+      context: ./grpc_nodes
+    environment:
+      - NODE_NAME=grpc-node3
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - grpc3-data:/data
+    ports:
+      - "50053:50051"
+
+  # Web Interface
+  web:
+    build:
+      context: ./web
+    ports:
+      - "8000:8000"
+    depends_on:
+      - http-node1
+      - http-node2
+      - http-node3
+      - grpc-node1
+      - grpc-node2
+      - grpc-node3
+
+volumes:
+  http1-data:
+  http2-data:
+  http3-data:
+  grpc1-data:
+  grpc2-data:
+  grpc3-data:

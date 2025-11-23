@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Distributed Picture Sharing System</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; padding: 20px; }
+        .container { max-width: 1200px; margin: 0 auto; background: white; padding: 30px; border-radius: 15px; box-shadow: 0 10px 40px rgba(0,0,0,0.2); }
+        h1 { color: #333; margin-bottom: 10px; font-size: 32px; }
+        .subtitle { color: #666; margin-bottom: 30px; font-size: 14px; }
+        .controls { margin: 20px 0; padding: 20px; background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%); border-radius: 10px; }
+        .upload-section { display: flex; align-items: center; gap: 10px; margin-bottom: 15px; flex-wrap: wrap; }
+        button { padding: 12px 24px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none; border-radius: 8px; cursor: pointer; font-size: 14px; font-weight: 600; transition: all 0.3s; }
+        button:hover { transform: translateY(-2px); box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4); }
+        .benchmark-section { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+        .benchmark-btn { background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); }
+        .benchmark-btn:hover { box-shadow: 0 5px 15px rgba(245, 87, 108, 0.4); }
+        .refresh-btn { background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%); }
+        input[type="file"], input[type="text"], select { padding: 10px; border: 2px solid #ddd; border-radius: 8px; font-size: 14px; }
+        input[type="file"] { flex: 1; min-width: 200px; }
+        input[type="text"] { flex: 1; min-width: 200px; }
+        select { padding: 10px 15px; background: white; cursor: pointer; }
+        .picture-list { margin-top: 30px; }
+        .picture-list h2 { color: #333; margin-bottom: 15px; font-size: 24px; }
+        .picture-item { padding: 20px; margin: 15px 0; background: white; border: 2px solid #e0e0e0; border-radius: 10px; display: flex; justify-content: space-between; align-items: center; transition: all 0.3s; }
+        .picture-item:hover { border-color: #667eea; box-shadow: 0 5px 20px rgba(102, 126, 234, 0.1); transform: translateY(-2px); }
+        .picture-info { flex: 1; }
+        .picture-info strong { font-size: 16px; color: #333; display: block; margin-bottom: 8px; }
+        .picture-meta { font-size: 13px; color: #666; }
+        .node-badge { display: inline-block; padding: 4px 12px; background: #667eea; color: white; border-radius: 20px; font-size: 11px; font-weight: 600; margin-right: 8px; }
+        .http-badge { background: #4CAF50; }
+        .grpc-badge { background: #2196F3; }
+        .likes-badge { background: #ff9800; color: white; padding: 4px 10px; border-radius: 15px; font-size: 12px; }
+        .picture-actions { display: flex; gap: 10px; }
+        .picture-actions button { padding: 8px 16px; font-size: 13px; }
+        .delete-btn { background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); }
+        .like-btn { background: linear-gradient(135deg, #ffecd2 0%, #fcb69f 100%); color: #333; }
+        .download-btn { background: linear-gradient(135deg, #a8edea 0%, #fed6e3 100%); color: #333; }
+        .logs { margin-top: 30px; padding: 20px; background: #1e1e1e; border-radius: 10px; max-height: 400px; overflow-y: auto; }
+        .logs h2 { color: #fff; margin-bottom: 15px; font-size: 20px; }
+        .log-entry { padding: 8px 12px; margin: 5px 0; background: #2d2d2d; border-left: 3px solid #667eea; font-family: 'Courier New', monospace; font-size: 13px; color: #a0a0a0; border-radius: 4px; }
+        .log-entry:hover { background: #3d3d3d; }
+        .stats { display: flex; gap: 20px; margin: 20px 0; flex-wrap: wrap; }
+        .stat-card { flex: 1; min-width: 200px; padding: 20px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border-radius: 10px; text-align: center; }
+        .stat-card h3 { font-size: 14px; margin-bottom: 10px; opacity: 0.9; }
+        .stat-card .stat-value { font-size: 32px; font-weight: bold; }
+        .benchmark-modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); z-index: 1000; align-items: center; justify-content: center; }
+        .benchmark-content { background: white; padding: 30px; border-radius: 15px; max-width: 800px; max-height: 80vh; overflow-y: auto; }
+        .benchmark-content h2 { margin-bottom: 20px; color: #333; }
+        .benchmark-result { margin: 15px 0; padding: 15px; background: #f5f7fa; border-radius: 8px; }
+        .benchmark-result h3 { color: #667eea; margin-bottom: 10px; }
+        .benchmark-result p { margin: 5px 0; color: #666; }
+        .close-btn { float: right; font-size: 28px; cursor: pointer; color: #999; }
+        .close-btn:hover { color: #333; }
+        .empty-state { text-align: center; padding: 40px; color: #999; }
+        .empty-state svg { width: 100px; height: 100px; margin-bottom: 20px; opacity: 0.5; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📸 Distributed Picture Sharing System</h1>
+        <p class="subtitle">Automatic load balancing across HTTP and gRPC nodes</p>
+        
+        <div class="stats">
+            <div class="stat-card">
+                <h3>Total Pictures</h3>
+                <div class="stat-value" id="totalPictures">0</div>
+            </div>
+            <div class="stat-card">
+                <h3>HTTP Nodes</h3>
+                <div class="stat-value">3</div>
+            </div>
+            <div class="stat-card">
+                <h3>gRPC Nodes</h3>
+                <div class="stat-value">3</div>
+            </div>
+        </div>
+        
+        <div class="controls">
+            <div class="upload-section">
+                <input type="file" id="fileInput" accept="image/*">
+                <button onclick="uploadFile()">📤 Upload Picture</button>
+            </div>
+            
+            <div class="upload-section">
+                <input type="text" id="searchInput" placeholder="Enter filename to search...">
+                <button onclick="searchPicture()">🔍 Search Picture</button>
+            </div>
+            
+            <div class="benchmark-section">
+                <label style="color: #333; font-weight: 600; margin-right: 10px;">Benchmark Test:</label>
+                <select id="benchmarkType">
+                    <option value="mixed">Mixed (HTTP + gRPC)</option>
+                    <option value="http">HTTP Only</option>
+                    <option value="grpc">gRPC Only</option>
+                </select>
+                <button class="benchmark-btn" onclick="runBenchmark()">⚡ Run Benchmark</button>
+                <button class="refresh-btn" onclick="refreshList()">🔄 Refresh List</button>
+            </div>
+        </div>
+        
+        <div class="picture-list">
+            <h2>📁 Picture Gallery</h2>
+            <div id="pictureContainer">
+                <div class="empty-state">
+                    <p>No pictures uploaded yet. Upload your first picture to get started!</p>
+                </div>
+            </div>
+        </div>
+        
+        <div class="logs">
+            <h2>📋 System Logs</h2>
+            <div id="logContainer"></div>
+        </div>
+    </div>
+
+    <!-- Benchmark Modal -->
+    <div class="benchmark-modal" id="benchmarkModal">
+        <div class="benchmark-content">
+            <span class="close-btn" onclick="closeBenchmark()">&times;</span>
+            <h2>⚡ Benchmark Results</h2>
+            <div id="benchmarkResults"></div>
+        </div>
+    </div>
+
+    <script>
+        async function uploadFile() {
+            const fileInput = document.getElementById('fileInput');
+            if (!fileInput.files[0]) {
+                alert('Please select a file first');
+                return;
+            }
+            
+            const formData = new FormData();
+            formData.append('file', fileInput.files[0]);
+            
+            try {
+                const response = await fetch('/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+                const result = await response.json();
+                
+                if (result.success) {
+                    alert(`✅ Uploaded to ${result.type} node: ${result.node}`);
+                    refreshList();
+                    fileInput.value = '';
+                } else {
+                    alert('❌ Upload failed');
+                }
+            } catch (error) {
+                alert('❌ Upload failed: ' + error);
+            }
+        }
+
+        async function searchPicture() {
+            const searchInput = document.getElementById('searchInput');
+            const filename = searchInput.value.trim();
+            if (!filename) {
+                alert('Please enter a filename');
+                return;
+            }
+            
+            try {
+                const response = await fetch(`/search/${encodeURIComponent(filename)}`);
+                const result = await response.json();
+                
+                if (result.found) {
+                    alert(`✅ Found on ${result.type} node: ${result.node}\n👍 Likes: ${result.likes}`);
+                } else {
+                    alert('❌ Picture not found in any node');
+                }
+            } catch (error) {
+                alert('❌ Search failed: ' + error);
+            }
+        }
+
+        async function downloadPicture(filename) {
+            try {
+                window.location.href = `/download/${encodeURIComponent(filename)}`;
+            } catch (error) {
+                alert('❌ Download failed: ' + error);
+            }
+        }
+
+        async function deletePicture(filename) {
+            if (!confirm(`Are you sure you want to delete "${filename}"?`)) return;
+            
+            try {
+                const response = await fetch(`/delete/${encodeURIComponent(filename)}`, {
+                    method: 'DELETE'
+                });
+                const result = await response.json();
+                
+                if (result.success) {
+                    alert('✅ Picture deleted successfully');
+                    refreshList();
+                } else {
+                    alert('❌ Delete failed');
+                }
+            } catch (error) {
+                alert('❌ Delete failed: ' + error);
+            }
+        }
+
+        async function likePicture(filename) {
+            try {
+                const response = await fetch(`/like/${encodeURIComponent(filename)}`, {
+                    method: 'POST'
+                });
+                const result = await response.json();
+                
+                if (result.success) {
+                    refreshList();
+                }
+            } catch (error) {
+                console.error('Like failed:', error);
+            }
+        }
+
+        async function refreshList() {
+            try {
+                const response = await fetch('/list');
+                const pictures = await response.json();
+                
+                const container = document.getElementById('pictureContainer');
+                container.innerHTML = '';
+                
+                const pictureCount = Object.keys(pictures).length;
+                document.getElementById('totalPictures').textContent = pictureCount;
+                
+                if (pictureCount === 0) {
+                    container.innerHTML = '<div class="empty-state"><p>No pictures uploaded yet. Upload your first picture to get started!</p></div>';
+                    return;
+                }
+                
+                for (const [filename, meta] of Object.entries(pictures)) {
+                    const item = document.createElement('div');
+                    item.className = 'picture-item';
+                    
+                    const badgeClass = meta.type === 'HTTP' ? 'http-badge' : 'grpc-badge';
+                    
+                    item.innerHTML = `
+                        <div class="picture-info">
+                            <strong>${filename}</strong>
+                            <div class="picture-meta">
+                                <span class="node-badge ${badgeClass}">${meta.type}</span>
+                                <span>Node: ${meta.node}</span>
+                                <span class="likes-badge">👍 ${meta.likes}</span>
+                            </div>
+                        </div>
+                        <div class="picture-actions">
+                            <button class="download-btn" onclick="downloadPicture('${filename}')">⬇ Download</button>
+                            <button class="like-btn" onclick="likePicture('${filename}')">👍 Like</button>
+                            <button class="delete-btn" onclick="deletePicture('${filename}')">🗑 Delete</button>
+                        </div>
+                    `;
+                    container.appendChild(item);
+                }
+            } catch (error) {
+                console.error('Refresh failed:', error);
+            }
+        }
+
+        async function refreshLogs() {
+            try {
+                const response = await fetch('/logs');
+                const logs = await response.json();
+                
+                const container = document.getElementById('logContainer');
+                container.innerHTML = '';
+                
+                if (logs.length === 0) {
+                    container.innerHTML = '<div style="color: #666; text-align: center; padding: 20px;">No logs yet</div>';
+                    return;
+                }
+                
+                logs.forEach(log => {
+                    const entry = document.createElement('div');
+                    entry.className = 'log-entry';
+                    entry.innerHTML = `<span style="color: #667eea;">[${log.time}]</span> ${log.message}`;
+                    container.appendChild(entry);
+                });
+                
+                container.scrollTop = container.scrollHeight;
+            } catch (error) {
+                console.error('Log refresh failed:', error);
+            }
+        }
+
+        async function runBenchmark() {
+            const benchmarkType = document.getElementById('benchmarkType').value;
+            
+            const modal = document.getElementById('benchmarkModal');
+            const results = document.getElementById('benchmarkResults');
+            results.innerHTML = '<p style="text-align: center; padding: 40px;">Running benchmark... Please wait...</p>';
+            modal.style.display = 'flex';
+            
+            try {
+                const response = await fetch('/benchmark', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        test_type: benchmarkType,
+                        workload: 50
+                    })
+                });
+                const data = await response.json();
+                
+                let html = '<div style="margin-bottom: 20px;">';
+                html += `<p><strong>Test Type:</strong> ${benchmarkType.toUpperCase()}</p>`;
+                html += '</div>';
+                
+                for (const [operation, metrics] of Object.entries(data)) {
+                    html += '<div class="benchmark-result">';
+                    html += `<h3>📊 ${operation.toUpperCase()}</h3>`;
+                    html += `<p><strong>Avg Latency:</strong> ${metrics.avg_latency} ms</p>`;
+                    html += `<p><strong>Min Latency:</strong> ${metrics.min_latency} ms</p>`;
+                    html += `<p><strong>Max Latency:</strong> ${metrics.max_latency} ms</p>`;
+                    html += `<p><strong>Throughput:</strong> ${metrics.throughput} ops/sec</p>`;
+                    html += `<p><strong>Successful Requests:</strong> ${metrics.successes}</p>`;
+                    
+                    if (operation === 'upload' && metrics.http_count !== undefined) {
+                        html += `<p><strong>HTTP Uploads:</strong> ${metrics.http_count}</p>`;
+                        html += `<p><strong>gRPC Uploads:</strong> ${metrics.grpc_count}</p>`;
+                    }
+                    
+                    html += '</div>';
+                }
+                
+                results.innerHTML = html;
+            } catch (error) {
+                results.innerHTML = `<p style="color: red; text-align: center;">❌ Benchmark failed: ${error}</p>`;
+            }
+        }
+
+        function closeBenchmark() {
+            document.getElementById('benchmarkModal').style.display = 'none';
+        }
+
+        // Auto-refresh every 5 seconds
+        setInterval(refreshList, 5000);
+        setInterval(refreshLogs, 2000);
+        
+        // Initial load
+        refreshList();
+        refreshLogs();
+        
+        // Close modal when clicking outside
+        window.onclick = function(event) {
+            const modal = document.getElementById('benchmarkModal');
+            if (event.target == modal) {
+                modal.style.display = 'none';
+            }
+        }
+    </script>
+</body>
+</html>
