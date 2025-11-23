@@ -1,0 +1,298 @@
+# Root-level orchestration compose file.
+# Goal: Allow all primary use cases (Go microservices, Python layered stack)
+# to be started from repository root per Instructions.txt guidance before
+# extending with 2PC and Raft clusters.
+
+services:
+  # --- Go auction microservices ---
+  go_catalog:
+    build:
+      context: ./distributed-auction-system/Distributed-Online-Auction-Platform-main/go-architecture
+      dockerfile: Dockerfile
+      args:
+        SERVICE: auction
+    environment:
+      - CATALOG_PORT=7001
+    ports:
+      - "7001:7001"
+
+  go_validator:
+    build:
+      context: ./distributed-auction-system/Distributed-Online-Auction-Platform-main/go-architecture
+      dockerfile: Dockerfile
+      args:
+        SERVICE: bidding
+    environment:
+      - VALIDATOR_PORT=7002
+    ports:
+      - "7002:7002"
+
+  go_history:
+    build:
+      context: ./distributed-auction-system/Distributed-Online-Auction-Platform-main/go-architecture
+      dockerfile: Dockerfile
+      args:
+        SERVICE: history
+    environment:
+      - HISTORY_PORT=7003
+    ports:
+      - "7003:7003"
+
+  go_updates:
+    build:
+      context: ./distributed-auction-system/Distributed-Online-Auction-Platform-main/go-architecture
+      dockerfile: Dockerfile
+      args:
+        SERVICE: updates
+    environment:
+      - UPDATES_PORT=7004
+    ports:
+      - "7004:7004"
+
+  go_notifier:
+    build:
+      context: ./distributed-auction-system/Distributed-Online-Auction-Platform-main/go-architecture
+      dockerfile: Dockerfile
+      args:
+        SERVICE: notifier
+    environment:
+      - NOTIFIER_PORT=7005
+    ports:
+      - "7005:7005"
+
+  go_gateway:
+    build:
+      context: ./distributed-auction-system/Distributed-Online-Auction-Platform-main/go-architecture
+      dockerfile: Dockerfile
+      args:
+        SERVICE: aggregator
+    environment:
+      - GATEWAY_PORT=7000
+      - CATALOG_ADDR=go_catalog:7001
+      - VALIDATOR_ADDR=go_validator:7002
+      - HISTORY_ADDR=go_history:7003
+      - UPDATES_ADDR=go_updates:7004
+      - NOTIFIER_ADDR=go_notifier:7005
+    ports:
+      - "7000:7000"
+    depends_on:
+      - go_catalog
+      - go_validator
+      - go_history
+      - go_updates
+      - go_notifier
+
+  # --- Python layered auction stack ---
+  py_auction_service:
+    build:
+      context: ./distributed-auction-system/Distributed-Online-Auction-Platform-main/python_architecture
+      dockerfile: Dockerfile
+      args:
+        SERVICE: auction_service
+    environment:
+      - SERVICE=auction_service
+      - AUCTION_SERVICE_PORT=8001
+
+  py_bidding_service:
+    build:
+      context: ./distributed-auction-system/Distributed-Online-Auction-Platform-main/python_architecture
+      dockerfile: Dockerfile
+      args:
+        SERVICE: bidding_service
+    environment:
+      - SERVICE=bidding_service
+      - BIDDING_SERVICE_PORT=8002
+
+  py_history_service:
+    build:
+      context: ./distributed-auction-system/Distributed-Online-Auction-Platform-main/python_architecture
+      dockerfile: Dockerfile
+      args:
+        SERVICE: history_service
+    environment:
+      - SERVICE=history_service
+      - HISTORY_SERVICE_PORT=8003
+
+  py_gateway:
+    build:
+      context: ./distributed-auction-system/Distributed-Online-Auction-Platform-main/python_architecture
+      dockerfile: Dockerfile
+      args:
+        SERVICE: gateway
+    environment:
+      - SERVICE=gateway
+      - GATEWAY_PORT=8000
+      - AUCTION_SERVICE_URL=http://py_auction_service:8001
+      - BIDDING_SERVICE_URL=http://py_bidding_service:8002
+      - HISTORY_SERVICE_URL=http://py_history_service:8003
+    ports:
+      - "8000:8000"
+    depends_on:
+      - py_auction_service
+      - py_bidding_service
+      - py_history_service
+
+  py_frontend:
+    build:
+      context: ./distributed-auction-system/Distributed-Online-Auction-Platform-main/python_architecture
+      dockerfile: Dockerfile
+      args:
+        SERVICE: frontend
+    environment:
+      - SERVICE=frontend
+      - FRONTEND_PORT=8080
+      - GATEWAY_URL=http://py_gateway:8000
+    ports:
+      - "8080:8080"
+    depends_on:
+      - py_gateway
+
+  # Placeholder consensus cluster (2PC / Raft) to be added:
+  # --- 2PC consensus cluster (Q1/Q2 Instructions) ---
+  2pc_coordinator:
+    build:
+      context: ./distributed-auction-system/Distributed-Online-Auction-Platform-main/go-architecture
+      dockerfile: Dockerfile
+      args:
+        SERVICE: 2pc_coordinator
+    environment:
+      - NODE_ID=coord1
+      - PARTICIPANT_ADDRS=2pc_participant1:7101,2pc_participant2:7102,2pc_participant3:7103,2pc_participant4:7104
+      - COORDINATOR_PORT=7100
+    ports:
+      - "7100:7100"
+    depends_on:
+      - 2pc_participant1
+      - 2pc_participant2
+      - 2pc_participant3
+      - 2pc_participant4
+
+  2pc_participant1:
+    build:
+      context: ./distributed-auction-system/Distributed-Online-Auction-Platform-main/go-architecture
+      dockerfile: Dockerfile
+      args:
+        SERVICE: 2pc_participant
+    environment:
+      - NODE_ID=p1
+      - PARTICIPANT_PORT=7101
+      - ABORT_PROB=0.0
+    ports:
+      - "7101:7101"
+
+  2pc_participant2:
+    build:
+      context: ./distributed-auction-system/Distributed-Online-Auction-Platform-main/go-architecture
+      dockerfile: Dockerfile
+      args:
+        SERVICE: 2pc_participant
+    environment:
+      - NODE_ID=p2
+      - PARTICIPANT_PORT=7102
+      - ABORT_PROB=0.2
+    ports:
+      - "7102:7102"
+
+  2pc_participant3:
+    build:
+      context: ./distributed-auction-system/Distributed-Online-Auction-Platform-main/go-architecture
+      dockerfile: Dockerfile
+      args:
+        SERVICE: 2pc_participant
+    environment:
+      - NODE_ID=p3
+      - PARTICIPANT_PORT=7103
+      - ABORT_PROB=0.0
+    ports:
+      - "7103:7103"
+
+  2pc_participant4:
+    build:
+      context: ./distributed-auction-system/Distributed-Online-Auction-Platform-main/go-architecture
+      dockerfile: Dockerfile
+      args:
+        SERVICE: 2pc_participant
+    environment:
+      - NODE_ID=p4
+      - PARTICIPANT_PORT=7104
+      - ABORT_PROB=0.0
+    ports:
+      - "7104:7104"
+
+  # --- Raft cluster for leader election (Q3) ---
+  raft_node1:
+    build:
+      context: ./distributed-auction-system/Distributed-Online-Auction-Platform-main/go-architecture
+      dockerfile: Dockerfile
+      args:
+        SERVICE: raft_node
+    environment:
+      - RAFT_NODE_ID=n1
+      - RAFT_PORT=7201
+      - RAFT_PEERS=raft_node2:7202,raft_node3:7203,raft_node4:7204,raft_node5:7205
+      - RAFT_HTTP_PORT=7301
+    ports:
+      - "7201:7201"
+      - "7301:7301"
+
+  raft_node2:
+    build:
+      context: ./distributed-auction-system/Distributed-Online-Auction-Platform-main/go-architecture
+      dockerfile: Dockerfile
+      args:
+        SERVICE: raft_node
+    environment:
+      - RAFT_NODE_ID=n2
+      - RAFT_PORT=7202
+      - RAFT_PEERS=raft_node1:7201,raft_node3:7203,raft_node4:7204,raft_node5:7205
+      - RAFT_HTTP_PORT=7302
+    ports:
+      - "7202:7202"
+      - "7302:7302"
+
+  raft_node3:
+    build:
+      context: ./distributed-auction-system/Distributed-Online-Auction-Platform-main/go-architecture
+      dockerfile: Dockerfile
+      args:
+        SERVICE: raft_node
+    environment:
+      - RAFT_NODE_ID=n3
+      - RAFT_PORT=7203
+      - RAFT_PEERS=raft_node1:7201,raft_node2:7202,raft_node4:7204,raft_node5:7205
+      - RAFT_HTTP_PORT=7303
+    ports:
+      - "7203:7203"
+      - "7303:7303"
+
+  raft_node4:
+    build:
+      context: ./distributed-auction-system/Distributed-Online-Auction-Platform-main/go-architecture
+      dockerfile: Dockerfile
+      args:
+        SERVICE: raft_node
+    environment:
+      - RAFT_NODE_ID=n4
+      - RAFT_PORT=7204
+      - RAFT_PEERS=raft_node1:7201,raft_node2:7202,raft_node3:7203,raft_node5:7205
+      - RAFT_HTTP_PORT=7304
+    ports:
+      - "7204:7204"
+      - "7304:7304"
+
+  raft_node5:
+    build:
+      context: ./distributed-auction-system/Distributed-Online-Auction-Platform-main/go-architecture
+      dockerfile: Dockerfile
+      args:
+        SERVICE: raft_node
+    environment:
+      - RAFT_NODE_ID=n5
+      - RAFT_PORT=7205
+      - RAFT_PEERS=raft_node1:7201,raft_node2:7202,raft_node3:7203,raft_node4:7204
+      - RAFT_HTTP_PORT=7305
+    ports:
+      - "7205:7205"
+      - "7305:7305"
+
+networks: {}

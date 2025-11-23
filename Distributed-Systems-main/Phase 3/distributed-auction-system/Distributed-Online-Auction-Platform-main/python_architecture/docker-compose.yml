@@ -1,0 +1,64 @@
+services:
+  auction_service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE: auction_service
+    environment:
+      - SERVICE=auction_service
+      - AUCTION_SERVICE_PORT=8001
+
+  bidding_service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE: bidding_service
+    environment:
+      - SERVICE=bidding_service
+      - BIDDING_SERVICE_PORT=8002
+
+  history_service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE: history_service
+    environment:
+      - SERVICE=history_service
+      - HISTORY_SERVICE_PORT=8003
+
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE: gateway
+    environment:
+      - SERVICE=gateway
+      - GATEWAY_PORT=8000
+      - AUCTION_SERVICE_URL=http://auction_service:8001
+      - BIDDING_SERVICE_URL=http://bidding_service:8002
+      - HISTORY_SERVICE_URL=http://history_service:8003
+    ports:
+      - "8000:8000"
+    depends_on:
+      - auction_service
+      - bidding_service
+      - history_service
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE: frontend
+    environment:
+      - SERVICE=frontend
+      - FRONTEND_PORT=8080
+      - GATEWAY_URL=http://gateway:8000
+    ports:
+      - "8080:8080"
+    depends_on:
+      - gateway

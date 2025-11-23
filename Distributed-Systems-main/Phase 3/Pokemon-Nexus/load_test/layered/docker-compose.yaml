@@ -1,0 +1,44 @@
+services:
+  # Database Seeder (RUNS ONCE)
+  db-seeder:
+    build: 
+      context: .
+      dockerfile: Dockerfile.test # Use the test runner Dockerfile, but run the seed script
+    container_name: phu-db-seeder
+    environment:
+      # Pass the connection string for the seeder script
+      - MONGO_URI=mongodb://admin:password@mongodb:27017/PokemonNexusDB?authSource=admin
+    volumes:
+      # Mount the current directory to access seed_db.py
+      - ./:/app 
+    # Override the default command to explicitly run the seeding script
+    command: python seed_db.py
+    # Set to exit after running the script
+    restart: "no" 
+
+  # Load Test Runner (Headless mode for data collection)
+  load-tester:
+    build: 
+      context: .
+      dockerfile: Dockerfile.test
+    container_name: phu-load-tester
+    # Host needs to be the name of the Nginx service
+    environment:
+      - TARGET_HOST=http://nginx
+    depends_on:
+      # Start the test only after all services are up and the DB is seeded
+      - db-seeder
+    volumes:
+      - ./:/app # Mount to access locustfile.py and save results
+      - ./test_results:/mnt/results # Dedicated volume for output
+    
+    # Locust Master in Headless Mode:
+    # -u 200: 200 users (Example)
+    # -r 20: 20 users/sec spawn rate (Ramp-up)
+    # --run-time 5m: Run for 5 minutes
+    # --csv: Output data to CSV files
+    # --headless: Run without web UI
+    command: locust -f locustfile.py --headless -H http://nginx -u 200 -r 20 --run-time 5m --csv /mnt/results/test_run_1 --skip-log-setup
+
+volumes:
+  test_results: # volume to store the test CSV output

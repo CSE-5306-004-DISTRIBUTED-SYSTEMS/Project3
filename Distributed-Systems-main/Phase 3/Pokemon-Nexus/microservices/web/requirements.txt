@@ -1,0 +1,12 @@
+Flask
+Flask-PyMongo
+Flask-Cors
+Flask-SocketIO
+Flask-Session
+python-dotenv
+Werkzeug
+gunicorn
+eventlet
+gevent
+gevent-websocket
+redis

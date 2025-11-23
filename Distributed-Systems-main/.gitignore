@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+env/
+venv/
+.env
+.venv
+
+# gRPC generated files
+microservices-grpc/tests/queue_pb2.py
+microservices-grpc/tests/queue_pb2_grpc.py
+
+# Docker
+*.log
+*.pid
+*.db
+*.sqlite3
+docker-compose.override.yml
+
+# VSCode
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
