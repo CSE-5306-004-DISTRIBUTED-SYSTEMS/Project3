@@ -5,220 +5,181 @@ import random
 import threading
 import os
 import sys
+import logging
 
-# Import generated code
-import queue_pb2
-import queue_pb2_grpc
+# Import generated gRPC code
 import raft_pb2
 import raft_pb2_grpc
+import queue_pb2
+import queue_pb2_grpc
+
+# Setup logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='[Node %(node)d] %(asctime)s %(levelname)s: %(message)s'
+)
+logger = logging.getLogger()
+logger = logging.LoggerAdapter(logger, {"node": int(os.environ.get("NODE_ID", 1))})
 
 # --- Configuration ---
 NODE_ID = int(os.environ.get('NODE_ID', 1))
-PEERS_MAP = os.environ.get('PEERS', '') # Format: "1=host:port,2=host:port"
+PEERS_MAP = os.environ.get('PEERS', '')  # Example: "1=raft-node1:50051,2=raft-node2:50051,..."
 PEERS = {}
 if PEERS_MAP:
     for p in PEERS_MAP.split(','):
-        if '=' in p:
-            pid, addr = p.split('=')
-            if int(pid) != NODE_ID:
-                PEERS[int(pid)] = addr
+        pid, addr = p.split('=')
+        if int(pid) != NODE_ID:
+            PEERS[int(pid)] = addr
 
-# Timers (Requirements: Heartbeat=1s, Election=1.5-3s)
-HEARTBEAT_INT = 1.0
-ELECTION_MIN = 1.5
-ELECTION_MAX = 3.0
+# --- Raft timing settings ---
+HEARTBEAT_INTERVAL = 1.0      # Heartbeat timeout (seconds)
+ELECTION_MIN = 1.5            # Election timeout min
+ELECTION_MAX = 3.0            # Election timeout max
 
 class RaftServer(queue_pb2_grpc.QueueServiceServicer, raft_pb2_grpc.RaftServiceServicer):
     def __init__(self):
         self.lock = threading.RLock()
-        
-        # --- Raft State ---
-        self.term = 0
+
+        # Raft state
+        self.current_term = 0
         self.voted_for = None
-        self.log = [] # List of raft_pb2.LogEntry
+        self.log = []  # List of LogEntry
         self.commit_index = -1
         self.last_applied = -1
-        
-        self.state = "FOLLOWER" # FOLLOWER, CANDIDATE, LEADER
+        self.state = "FOLLOWER"
         self.leader_id = None
         self.last_heartbeat = time.time()
         self.election_timeout = random.uniform(ELECTION_MIN, ELECTION_MAX)
-        
-        # --- Application State (In-Memory Music Queue) ---
-        # We use in-memory state to verify Raft replication is working 
-        # (Redis would hide replication issues by sharing state)
-        self.music_queue = [] 
-        
-        # --- Background Timer ---
+
+        # Votes for election
+        self.votes_received = 0
+
+        # App state
+        self.music_queue = []
+
+        # Start background timer loop
         threading.Thread(target=self._timer_loop, daemon=True).start()
 
     # =========================================================
-    #  RAFT CORE: TIMERS & ELECTION
+    # Timer loop: heartbeat & election
     # =========================================================
     def _timer_loop(self):
         while True:
             with self.lock:
                 now = time.time()
                 if self.state == "LEADER":
-                    if now - self.last_heartbeat >= HEARTBEAT_INT:
+                    if now - self.last_heartbeat >= HEARTBEAT_INTERVAL:
                         self._send_heartbeats()
                         self.last_heartbeat = now
                 else:
                     if now - self.last_heartbeat >= self.election_timeout:
-                        print(f"Node {NODE_ID} Election Timeout. Becoming CANDIDATE.")
+                        logger.info(f"Election timeout -> start election")
                         self._start_election()
-            time.sleep(0.1)
+            time.sleep(0.05)
 
+    # =========================================================
+    # Leader election
+    # =========================================================
     def _start_election(self):
         self.state = "CANDIDATE"
-        self.term += 1
+        self.current_term += 1
         self.voted_for = NODE_ID
+        self.votes_received = 1  # Vote for self
         self.last_heartbeat = time.time()
         self.election_timeout = random.uniform(ELECTION_MIN, ELECTION_MAX)
-        
-        # Prepare VoteArgs
+
+        logger.info(f"Became CANDIDATE for term {self.current_term}")
+
         last_idx = len(self.log) - 1
         last_term = self.log[last_idx].term if last_idx >= 0 else 0
-        
+
         args = raft_pb2.VoteArgs(
-            term=self.term, candidate_id=NODE_ID,
-            last_log_index=last_idx, last_log_term=last_term
+            term=self.current_term,
+            candidate_id=NODE_ID,
+            last_log_index=last_idx,
+            last_log_term=last_term
         )
-        
-        self.votes_received = 1 # Vote for self
-        
-        # Async send to peers
+
         for pid, addr in PEERS.items():
             threading.Thread(target=self._send_vote_request, args=(pid, addr, args)).start()
 
     def _send_vote_request(self, pid, addr, args):
-        # LOG REQUIREMENT
-        print(f"Node {NODE_ID} sends RPC RequestVote to Node {pid}")
+        logger.info(f"sends RPC RequestVote to Node {pid}")
         try:
             channel = grpc.insecure_channel(addr)
             stub = raft_pb2_grpc.RaftServiceStub(channel)
             resp = stub.RequestVote(args, timeout=0.5)
-            
+
             with self.lock:
-                if resp.term > self.term:
+                if resp.term > self.current_term:
                     self._become_follower(resp.term)
                     return
                 if self.state == "CANDIDATE" and resp.vote_granted:
                     self.votes_received += 1
-                    # Majority Check
-                    if self.votes_received > (len(PEERS) + 1) / 2:
+                    if self.votes_received > (len(PEERS) + 1) // 2:
                         self._become_leader()
-        except: pass
+        except grpc.RpcError as e:
+            logger.warning(f"Vote request to Node {pid} failed: {e}")
 
     def _become_leader(self):
-        if self.state != "LEADER":
-            print(f"Node {NODE_ID} won election! Becoming LEADER.")
-            self.state = "LEADER"
-            self.leader_id = NODE_ID
-            self._send_heartbeats()
+        self.state = "LEADER"
+        self.leader_id = NODE_ID
+        self.last_heartbeat = time.time()
+        logger.info(f"Won election and became LEADER for term {self.current_term}")
+        self._send_heartbeats()
 
     def _become_follower(self, term):
         self.state = "FOLLOWER"
-        self.term = term
+        self.current_term = term
         self.voted_for = None
+        self.leader_id = None
         self.last_heartbeat = time.time()
+        logger.info(f"Transition to FOLLOWER term={term}")
 
     # =========================================================
-    #  RAFT CORE: LOG REPLICATION & HEARTBEAT
+    # Log replication
     # =========================================================
     def _send_heartbeats(self):
-        # Requirement: "sends its entire log... on next heartbeat"
         entries = list(self.log)
-        
         args = raft_pb2.AppendArgs(
-            term=self.term, leader_id=NODE_ID,
-            prev_log_index=-1, prev_log_term=0, # Simplified for "entire log"
-            entries=entries, leader_commit=self.commit_index
+            term=self.current_term,
+            leader_id=NODE_ID,
+            prev_log_index=len(self.log)-1,
+            prev_log_term=self.log[-1].term if self.log else 0,
+            entries=entries,
+            leader_commit=self.commit_index
         )
-        
         for pid, addr in PEERS.items():
             threading.Thread(target=self._send_append, args=(pid, addr, args)).start()
 
     def _send_append(self, pid, addr, args):
-        # LOG REQUIREMENT
-        print(f"Node {NODE_ID} sends RPC AppendEntries to Node {pid}")
+        logger.info(f"sends RPC AppendEntries to Node {pid}")
         try:
             channel = grpc.insecure_channel(addr)
             stub = raft_pb2_grpc.RaftServiceStub(channel)
             resp = stub.AppendEntries(args, timeout=0.5)
-            
+
             with self.lock:
-                if resp.term > self.term:
+                if resp.term > self.current_term:
                     self._become_follower(resp.term)
                     return
+
+                # Commit if majority ACK
                 if self.state == "LEADER" and resp.success:
-                    # Update Commit Index (Majority Check Simplification)
-                    # If majority ACKed the log, we assume end of log is committed
-                    if len(self.log) - 1 > self.commit_index:
-                        self.commit_index = len(self.log) - 1
+                    if len(self.log)-1 > self.commit_index:
+                        self.commit_index = len(self.log)-1
                         self._apply_logs()
-        except: pass
-
-    # =========================================================
-    #  RAFT RPC HANDLERS (Called by Peers)
-    # =========================================================
-    def RequestVote(self, request, context):
-        with self.lock:
-            # LOG REQUIREMENT
-            print(f"Node {NODE_ID} runs RPC RequestVote called by Node {request.candidate_id}")
-            
-            if request.term > self.term:
-                self._become_follower(request.term)
-            
-            vote = False
-            if request.term == self.term and (self.voted_for is None or self.voted_for == request.candidate_id):
-                # Log Freshness Check
-                last_idx = len(self.log) - 1
-                last_term = self.log[last_idx].term if last_idx >= 0 else 0
-                
-                if (request.last_log_term > last_term) or \
-                   (request.last_log_term == last_term and request.last_log_index >= last_idx):
-                    vote = True
-                    self.voted_for = request.candidate_id
-                    self.last_heartbeat = time.time()
-            
-            return raft_pb2.VoteReply(term=self.term, vote_granted=vote)
-
-    def AppendEntries(self, request, context):
-        with self.lock:
-            # LOG REQUIREMENT
-            print(f"Node {NODE_ID} runs RPC AppendEntries called by Node {request.leader_id}")
-            
-            if request.term >= self.term:
-                self.last_heartbeat = time.time()
-                self.leader_id = request.leader_id
-                if self.state != "FOLLOWER":
-                    self._become_follower(request.term)
-            
-            if request.term < self.term:
-                return raft_pb2.AppendReply(term=self.term, success=False)
-
-            # Log Replication: Overwrite with Leader's log (Assignment Simplification)
-            self.log = list(request.entries)
-            
-            # Commit Logic
-            if request.leader_commit > self.commit_index:
-                self.commit_index = min(request.leader_commit, len(self.log) - 1)
-                self._apply_logs()
-
-            return raft_pb2.AppendReply(term=self.term, success=True)
+        except grpc.RpcError as e:
+            logger.warning(f"AppendEntries to Node {pid} failed: {e}")
 
     def _apply_logs(self):
-        """Executes committed commands against the State Machine (Music Queue)"""
         while self.last_applied < self.commit_index:
             self.last_applied += 1
             entry = self.log[self.last_applied]
-            print(f"Node {NODE_ID} EXECUTING: {entry.command}")
-            
+            logger.info(f"Applying log[{self.last_applied}] cmd={entry.command}")
             if entry.command == "ADD":
                 t = queue_pb2.Track()
                 t.ParseFromString(entry.data)
-                # Avoid duplicates in this simple list
                 if not any(x.id == t.id for x in self.music_queue):
                     self.music_queue.append(t)
             elif entry.command == "REMOVE":
@@ -227,78 +188,606 @@ class RaftServer(queue_pb2_grpc.QueueServiceServicer, raft_pb2_grpc.RaftServiceS
                 self.music_queue = [x for x in self.music_queue if x.id != tid.id]
 
     # =========================================================
-    #  QUEUE SERVICE (Called by Client)
+    # RPC handlers
     # =========================================================
-    def _forward(self, request, method_name):
-        """Helper to forward client requests to Leader"""
-        if self.leader_id and self.leader_id in PEERS:
-            # LOG REQUIREMENT
-            print(f"Node {NODE_ID} sends RPC {method_name} (Forwarding) to Node {self.leader_id}")
-            try:
-                channel = grpc.insecure_channel(PEERS[self.leader_id])
-                stub = queue_pb2_grpc.QueueServiceStub(channel)
-                method = getattr(stub, method_name)
-                return method(request)
-            except grpc.RpcError as e:
-                return queue_pb2.QueueResponse(message=f"Forwarding Failed: {e.code()}")
-        else:
-            return queue_pb2.QueueResponse(message="No Leader Elected Yet")
+    def RequestVote(self, request, context):
+        logger.info(f"runs RPC RequestVote called by Node {request.candidate_id}")
+        with self.lock:
+            if request.term > self.current_term:
+                self._become_follower(request.term)
+
+            vote_granted = False
+            if request.term == self.current_term and (self.voted_for is None or self.voted_for == request.candidate_id):
+                last_idx = len(self.log)-1
+                last_term = self.log[last_idx].term if last_idx >= 0 else 0
+                if request.last_log_term > last_term or (request.last_log_term == last_term and request.last_log_index >= last_idx):
+                    vote_granted = True
+                    self.voted_for = request.candidate_id
+                    self.last_heartbeat = time.time()
+            return raft_pb2.VoteReply(term=self.current_term, vote_granted=vote_granted)
+
+    def AppendEntries(self, request, context):
+        logger.info(f"runs RPC AppendEntries called by Node {request.leader_id}")
+        with self.lock:
+            if request.term >= self.current_term:
+                self.leader_id = request.leader_id
+                self.last_heartbeat = time.time()
+                if self.state != "FOLLOWER":
+                    self._become_follower(request.term)
+            if request.term < self.current_term:
+                return raft_pb2.AppendReply(term=self.current_term, success=False)
+
+            # Replace log with leader's log
+            self.log = list(request.entries)
+            if request.leader_commit > self.commit_index:
+                self.commit_index = min(request.leader_commit, len(self.log)-1)
+                self._apply_logs()
+            return raft_pb2.AppendReply(term=self.current_term, success=True)
+
+    # =========================================================
+    # Client requests (forward if not leader)
+    # =========================================================
+    def _forward_to_leader(self, request, method_name):
+        if self.leader_id is None:
+            return queue_pb2.QueueResponse(message="No leader elected yet")
+        if self.leader_id == NODE_ID:
+            return queue_pb2.QueueResponse(message="Error: I am leader but state mismatch")
+
+        target_addr = PEERS[self.leader_id]
+        logger.info(f"Forwarding {method_name} to leader {self.leader_id}")
+        try:
+            channel = grpc.insecure_channel(target_addr)
+            stub = queue_pb2_grpc.QueueServiceStub(channel)
+            method = getattr(stub, method_name)
+            return method(request)
+        except grpc.RpcError as e:
+            return queue_pb2.QueueResponse(message=f"Forwarding failed: {e}")
 
     def AddTrack(self, request, context):
+        logger.info("AddTrack called")
         with self.lock:
-            # LOG REQUIREMENT
-            print(f"Node {NODE_ID} runs RPC AddTrack called by Client")
-            
-            if self.state == "LEADER":
-                # Append to Log
-                entry = raft_pb2.LogEntry(
-                    term=self.term,
-                    command="ADD",
-                    data=request.SerializeToString()
-                )
-                self.log.append(entry)
-                # Note: In strict Raft we wait for commit. Here we return optimistic success
-                # so the client doesn't block forever waiting for the heartbeat interval.
-                return queue_pb2.QueueResponse(message="Queued by Leader", queue=self.music_queue)
-            else:
-                return self._forward(request, "AddTrack")
+            if self.state != "LEADER":
+                return self._forward_to_leader(request, "AddTrack")
+
+            entry = raft_pb2.LogEntry(
+                term=self.current_term,
+                command="ADD",
+                data=request.SerializeToString()
+            )
+            self.log.append(entry)
+            logger.info(f"Leader appended log[{len(self.log)-1}]")
+            self._send_heartbeats()  # trigger replication immediately
+            return queue_pb2.QueueResponse(message="Queued", queue=self.music_queue)
 
     def RemoveTrack(self, request, context):
+        logger.info("RemoveTrack called")
         with self.lock:
-            print(f"Node {NODE_ID} runs RPC RemoveTrack called by Client")
-            
-            if self.state == "LEADER":
-                entry = raft_pb2.LogEntry(
-                    term=self.term,
-                    command="REMOVE",
-                    data=request.SerializeToString()
-                )
-                self.log.append(entry)
-                return queue_pb2.QueueResponse(message="Queued by Leader", queue=self.music_queue)
-            else:
-                return self._forward(request, "RemoveTrack")
+            if self.state != "LEADER":
+                return self._forward_to_leader(request, "RemoveTrack")
+
+            entry = raft_pb2.LogEntry(
+                term=self.current_term,
+                command="REMOVE",
+                data=request.SerializeToString()
+            )
+            self.log.append(entry)
+            logger.info(f"Leader appended log[{len(self.log)-1}]")
+            self._send_heartbeats()
+            return queue_pb2.QueueResponse(message="Removed", queue=self.music_queue)
 
     def GetQueue(self, request, context):
-        # Return local state (Read-Your-Writes eventual consistency)
         return queue_pb2.QueueList(queue=self.music_queue)
 
-    # --- Stubs for other methods to ensure Interface Compliance ---
+    # Dummy implementations
     def VoteTrack(self, r, c): return queue_pb2.QueueResponse()
     def GetMetadata(self, r, c): return queue_pb2.Track()
     def PlayNext(self, r, c): return queue_pb2.Track()
     def GetHistory(self, r, c): return queue_pb2.QueueList()
 
-
+# =========================================================
+# gRPC server
+# =========================================================
 def serve():
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
-    # Register BOTH services on the same server
-    queue_pb2_grpc.add_QueueServiceServicer_to_server(RaftServer(), server)
     raft_pb2_grpc.add_RaftServiceServicer_to_server(RaftServer(), server)
-    
-    server.add_insecure_port('[::]:50051')
-    print(f"Raft Node {NODE_ID} started on port 50051")
+    queue_pb2_grpc.add_QueueServiceServicer_to_server(RaftServer(), server)
+    port = 50051
+    server.add_insecure_port(f'[::]:{port}')
+    logger.info(f"Raft Node {NODE_ID} started on port {port}")
     server.start()
     server.wait_for_termination()
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     serve()
+
+
+
+
+#########Question 4
+
+# # raft_server.py
+# import os
+# import time
+# import random
+# import threading
+# import logging
+# from concurrent import futures
+
+# import grpc
+
+# # generated protobuf modules - ensure these are generated from your .proto files
+# import raft_pb2
+# import raft_pb2_grpc
+# import queue_pb2
+# import queue_pb2_grpc
+
+# # -------------------------
+# # Config - tune as needed
+# # -------------------------
+# NODE_ID = int(os.environ.get("NODE_ID", "1"))
+# PORT = int(os.environ.get("PORT", "50051"))
+# PEERS_MAP = os.environ.get("PEERS", "")  # e.g. "2=raft-node2:50051,3=raft-node3:50051"
+# PEERS = {}
+# if PEERS_MAP:
+#     for p in PEERS_MAP.split(","):
+#         if "=" in p:
+#             pid, addr = p.split("=")
+#             pid = int(pid.strip())
+#             addr = addr.strip()
+#             if pid != NODE_ID:
+#                 PEERS[pid] = addr
+
+# # Timing
+# HEARTBEAT_INTERVAL = float(os.environ.get("HEARTBEAT_INTERVAL", 0.3))
+# ELECTION_TIMEOUT_MIN = float(os.environ.get("ELECTION_TIMEOUT_MIN", 1.5))
+# ELECTION_TIMEOUT_MAX = float(os.environ.get("ELECTION_TIMEOUT_MAX", 3.0))
+# RPC_TIMEOUT = float(os.environ.get("RPC_TIMEOUT", 1.0))
+# CLIENT_APPLY_TIMEOUT = float(os.environ.get("CLIENT_APPLY_TIMEOUT", 5.0))
+
+# # Logging
+# logging.basicConfig(format=f"[Node {NODE_ID}] %(asctime)s %(levelname)s: %(message)s", level=logging.INFO)
+# logger = logging.getLogger()
+
+# # -------------------------
+# # Raft Server
+# # -------------------------
+# class RaftServer(queue_pb2_grpc.QueueServiceServicer, raft_pb2_grpc.RaftServiceServicer):
+#     def __init__(self):
+#         # concurrency
+#         self.lock = threading.RLock()
+
+#         # persistent state (in-memory; persist to disk for durability)
+#         self.current_term = 0
+#         self.voted_for = None
+#         self.log = []  # list of raft_pb2.LogEntry
+
+#         # volatile state
+#         self.commit_index = -1
+#         self.last_applied = -1
+#         self.state = "FOLLOWER"  # FOLLOWER, CANDIDATE, LEADER
+#         self.leader_id = None
+
+#         # election / heartbeat
+#         self.last_heartbeat = time.time()
+#         self._reset_election_deadline()
+
+#         # leader-only state
+#         self.next_index = {}   # peer_id -> next index to send
+#         self.match_index = {}  # peer_id -> highest replicated index
+
+#         # application state
+#         self.music_queue = []  # list of queue_pb2.Track
+
+#         # channel reuse
+#         self.peer_channels = {}  # pid -> grpc.Channel
+#         self.peer_raft_stubs = {}  # pid -> raft_pb2_grpc.RaftServiceStub
+#         self.peer_queue_stubs = {}  # pid -> queue_pb2_grpc.QueueServiceStub
+
+#         # commit condition for clients waiting for their entries to be committed
+#         self.commit_cond = threading.Condition(self.lock)
+
+#         # vote tracking for elections
+#         self.votes_received = 0
+
+#         # background control
+#         self._stop = threading.Event()
+#         threading.Thread(target=self._timer_loop, daemon=True).start()
+#         logger.info("RaftServer initialized")
+
+#     # -------------------------
+#     # Helpers
+#     # -------------------------
+#     def _reset_election_deadline(self):
+#         self.election_deadline = time.time() + random.uniform(ELECTION_TIMEOUT_MIN, ELECTION_TIMEOUT_MAX)
+
+#     def _total_nodes(self):
+#         return len(PEERS) + 1
+
+#     def _quorum_count(self):
+#         total = self._total_nodes()
+#         return total // 2 + 1
+
+#     def _get_or_create_peer_channel(self, pid, addr):
+#         ch = self.peer_channels.get(pid)
+#         if ch is None:
+#             ch = grpc.insecure_channel(addr)
+#             self.peer_channels[pid] = ch
+#             self.peer_raft_stubs[pid] = raft_pb2_grpc.RaftServiceStub(ch)
+#             self.peer_queue_stubs[pid] = queue_pb2_grpc.QueueServiceStub(ch)
+#         return ch
+
+#     # -------------------------
+#     # Timer loop
+#     # -------------------------
+#     def _timer_loop(self):
+#         while not self._stop.is_set():
+#             now = time.time()
+#             with self.lock:
+#                 if self.state == "LEADER":
+#                     if now - self.last_heartbeat >= HEARTBEAT_INTERVAL:
+#                         self._send_heartbeats()
+#                         self.last_heartbeat = now
+#                 else:
+#                     if now >= self.election_deadline:
+#                         logger.info("Election timeout -> start election")
+#                         self._start_election()
+#             time.sleep(0.05)
+
+#     # -------------------------
+#     # Elections
+#     # -------------------------
+#     def _start_election(self):
+#         # caller holds lock
+#         self.state = "CANDIDATE"
+#         self.current_term += 1
+#         self.voted_for = NODE_ID
+#         self.votes_received = 1
+#         self._reset_election_deadline()
+#         self.last_heartbeat = time.time()
+#         logger.info(f"Became CANDIDATE for term {self.current_term}")
+
+#         last_index = len(self.log) - 1
+#         last_term = self.log[last_index].term if last_index >= 0 else 0
+#         args = raft_pb2.VoteArgs(term=self.current_term, candidate_id=NODE_ID,
+#                                  last_log_index=last_index, last_log_term=last_term)
+
+#         for pid, addr in PEERS.items():
+#             threading.Thread(target=self._send_request_vote, args=(pid, addr, args), daemon=True).start()
+
+#     def _send_request_vote(self, pid, addr, args):
+#         try:
+#             self._get_or_create_peer_channel(pid, addr)
+#             stub = self.peer_raft_stubs[pid]
+#             resp = stub.RequestVote(args, timeout=RPC_TIMEOUT)
+#             with self.lock:
+#                 if resp.term > self.current_term:
+#                     logger.info(f"Observed higher term {resp.term} from {pid}; becoming follower")
+#                     self._become_follower(resp.term, leader_id=None)
+#                     return
+#                 if self.state != "CANDIDATE" or args.term != self.current_term:
+#                     return
+#                 if resp.vote_granted:
+#                     self.votes_received += 1
+#                     logger.debug(f"Vote granted by {pid}; votes={self.votes_received}")
+#                     if self.votes_received >= self._quorum_count():
+#                         self._become_leader()
+#         except grpc.RpcError as e:
+#             logger.warning(f"RequestVote RPC to {pid} failed: {e}")
+#         except Exception as e:
+#             logger.exception("Error in _send_request_vote: %s", e)
+
+#     # -------------------------
+#     # Leader transition & AppendEntries sending
+#     # -------------------------
+#     def _become_leader(self):
+#         if self.state == "LEADER":
+#             return
+#         self.state = "LEADER"
+#         self.leader_id = NODE_ID
+#         logger.info(f"Won election and became LEADER for term {self.current_term}")
+#         # initialize next_index/match_index
+#         nexti = len(self.log)
+#         for pid in PEERS:
+#             self.next_index[pid] = nexti
+#             self.match_index[pid] = -1
+#         # leader's own indices
+#         self.match_index[NODE_ID] = len(self.log) - 1
+#         self.next_index[NODE_ID] = len(self.log)
+#         # send initial heartbeats
+#         self._send_heartbeats()
+
+#     def _become_follower(self, term, leader_id=None):
+#         self.state = "FOLLOWER"
+#         self.current_term = term
+#         self.voted_for = None
+#         self.leader_id = leader_id
+#         self._reset_election_deadline()
+#         self.last_heartbeat = time.time()
+#         logger.info(f"Transition to FOLLOWER term={self.current_term}, leader={self.leader_id}")
+
+#     def _send_heartbeats(self):
+#         # Send AppendEntries tailored to each follower
+#         for pid, addr in PEERS.items():
+#             nxt = self.next_index.get(pid, len(self.log))
+#             prev_idx = nxt - 1
+#             prev_term = self.log[prev_idx].term if (0 <= prev_idx < len(self.log)) else 0
+#             entries = self.log[nxt:]  # empty on heartbeat
+#             args = raft_pb2.AppendArgs(
+#                 term=self.current_term,
+#                 leader_id=NODE_ID,
+#                 prev_log_index=prev_idx,
+#                 prev_log_term=prev_term,
+#                 entries=entries,
+#                 leader_commit=self.commit_index
+#             )
+#             threading.Thread(target=self._send_append_entries, args=(pid, addr, args), daemon=True).start()
+
+#     def _send_append_entries(self, pid, addr, args):
+#         try:
+#             self._get_or_create_peer_channel(pid, addr)
+#             stub = self.peer_raft_stubs[pid]
+#             resp = stub.AppendEntries(args, timeout=RPC_TIMEOUT)
+#             with self.lock:
+#                 if resp.term > self.current_term:
+#                     logger.info(f"Peer {pid} has higher term {resp.term}; stepping down")
+#                     self._become_follower(resp.term, leader_id=None)
+#                     return
+#                 if resp.success:
+#                     replicated_up_to = args.prev_log_index + len(args.entries)
+#                     self.match_index[pid] = replicated_up_to
+#                     self.next_index[pid] = replicated_up_to + 1
+#                     logger.debug(f"AppendEntries success from {pid}: match_index={self.match_index[pid]}")
+#                     # Attempt to advance commit index
+#                     self._advance_commit_index()
+#                 else:
+#                     # simple fallback: decrement next_index and try later
+#                     old_next = self.next_index.get(pid, len(self.log))
+#                     self.next_index[pid] = max(0, old_next - 1)
+#                     logger.debug(f"AppendEntries failed for {pid}; next_index {old_next}->{self.next_index[pid]}")
+#         except grpc.RpcError as e:
+#             logger.warning(f"AppendEntries RPC to {pid} failed: {e}")
+#         except Exception as e:
+#             logger.exception("Error in _send_append_entries: %s", e)
+
+#     def _advance_commit_index(self):
+#         # Caller holds lock
+#         last_index = len(self.log) - 1
+#         for N in range(self.commit_index + 1, last_index + 1):
+#             # safe commit rule: only commit entries from current term by leader
+#             if self.log[N].term != self.current_term:
+#                 continue
+#             # count nodes with match_index >= N (leader included)
+#             count = 1
+#             for pid in PEERS:
+#                 if self.match_index.get(pid, -1) >= N:
+#                     count += 1
+#             if count >= self._quorum_count():
+#                 self.commit_index = N
+#                 logger.info(f"Advanced commit_index -> {self.commit_index}")
+#                 # notify waiters
+#                 self.commit_cond.notify_all()
+#             # continue checking higher N
+
+#         # apply logs after possibly advancing
+#         self._apply_logs_locked()
+
+#     # -------------------------
+#     # RPC handlers - Raft
+#     # -------------------------
+#     def RequestVote(self, request, context):
+#         with self.lock:
+#             logger.info(f"RequestVote from {request.candidate_id} (term {request.term})")
+#             if request.term > self.current_term:
+#                 self._become_follower(request.term, leader_id=None)
+
+#             vote_granted = False
+#             if request.term == self.current_term:
+#                 if self.voted_for is None or self.voted_for == request.candidate_id:
+#                     last_idx = len(self.log) - 1
+#                     last_term = self.log[last_idx].term if last_idx >= 0 else 0
+#                     # candidate up-to-date check
+#                     if (request.last_log_term > last_term) or (request.last_log_term == last_term and request.last_log_index >= last_idx):
+#                         vote_granted = True
+#                         self.voted_for = request.candidate_id
+#                         self._reset_election_deadline()
+#                         logger.info(f"Voted for {request.candidate_id}")
+#             return raft_pb2.VoteReply(term=self.current_term, vote_granted=vote_granted)
+
+#     def AppendEntries(self, request, context):
+#         with self.lock:
+#             logger.debug(f"AppendEntries from leader {request.leader_id} (term {request.term})")
+#             if request.term < self.current_term:
+#                 return raft_pb2.AppendReply(term=self.current_term, success=False)
+
+#             if request.term > self.current_term:
+#                 self._become_follower(request.term, leader_id=request.leader_id)
+#             else:
+#                 # same term -> update leader and heartbeat
+#                 self.leader_id = request.leader_id
+#                 self.last_heartbeat = time.time()
+#                 self._reset_election_deadline()
+
+#             # consistency check: prev_log must match
+#             if request.prev_log_index >= 0:
+#                 if request.prev_log_index >= len(self.log):
+#                     return raft_pb2.AppendReply(term=self.current_term, success=False)
+#                 if self.log[request.prev_log_index].term != request.prev_log_term:
+#                     return raft_pb2.AppendReply(term=self.current_term, success=False)
+
+#             # append entries, resolving conflicts by truncation
+#             insert_idx = request.prev_log_index + 1
+#             for entry in request.entries:
+#                 if insert_idx < len(self.log):
+#                     if self.log[insert_idx].term != entry.term:
+#                         # conflict -> truncate and append the rest
+#                         self.log = self.log[:insert_idx]
+#                         self.log.append(entry)
+#                     # else already have same entry -> do nothing
+#                 else:
+#                     self.log.append(entry)
+#                 insert_idx += 1
+
+#             # update commit index
+#             if request.leader_commit > self.commit_index:
+#                 self.commit_index = min(request.leader_commit, len(self.log) - 1)
+#                 logger.debug(f"Updated commit_index to {self.commit_index}")
+#                 self._apply_logs_locked()
+
+#             return raft_pb2.AppendReply(term=self.current_term, success=True)
+
+#     # -------------------------
+#     # Apply logs to state machine
+#     # -------------------------
+#     def _apply_logs_locked(self):
+#         # lock must be held by caller
+#         while self.last_applied < self.commit_index:
+#             self.last_applied += 1
+#             entry = self.log[self.last_applied]
+#             logger.info(f"Applying log[{self.last_applied}] cmd={entry.command}")
+#             try:
+#                 if entry.command == "ADD":
+#                     t = queue_pb2.Track()
+#                     t.ParseFromString(entry.data)
+#                     if not any(x.id == t.id for x in self.music_queue):
+#                         self.music_queue.append(t)
+#                 elif entry.command == "REMOVE":
+#                     tid = queue_pb2.TrackId()
+#                     tid.ParseFromString(entry.data)
+#                     self.music_queue = [x for x in self.music_queue if x.id != tid.id]
+#                 else:
+#                     logger.warning(f"Unknown command in log: {entry.command}")
+#             except Exception as e:
+#                 logger.exception("Failed to apply log entry: %s", e)
+
+#     def _apply_logs(self):
+#         with self.lock:
+#             self._apply_logs_locked()
+
+#     # -------------------------
+#     # Client-facing Queue RPCs
+#     # -------------------------
+#     def _forward_to_leader(self, request, method_name):
+#         target = self.leader_id
+#         if target is None:
+#             return queue_pb2.QueueResponse(message="No leader elected")
+#         if target == NODE_ID:
+#             return queue_pb2.QueueResponse(message="Leader state mismatch")
+#         if target not in PEERS:
+#             return queue_pb2.QueueResponse(message=f"Unknown leader id {target}")
+#         try:
+#             self._get_or_create_peer_channel(target, PEERS[target])
+#             qstub = self.peer_queue_stubs[target]
+#             method = getattr(qstub, method_name)
+#             return method(request, timeout=RPC_TIMEOUT)
+#         except grpc.RpcError as e:
+#             logger.warning("Forwarding RPC failed: %s", e)
+#             return queue_pb2.QueueResponse(message=f"Forwarding failed: {e}")
+#         except Exception as e:
+#             logger.exception("Forwarding error: %s", e)
+#             return queue_pb2.QueueResponse(message="Forwarding error")
+
+#     def AddTrack(self, request, context):
+#         with self.lock:
+#             logger.info("AddTrack called")
+#             if self.state != "LEADER":
+#                 return self._forward_to_leader(request, "AddTrack")
+
+#             entry = raft_pb2.LogEntry(term=self.current_term, command="ADD", data=request.SerializeToString())
+#             index = len(self.log)
+#             self.log.append(entry)
+#             logger.info(f"Leader appended log[{index}]")
+
+#             # leader bookkeeping
+#             self.match_index[NODE_ID] = index
+#             self.next_index[NODE_ID] = index + 1
+
+#             # request replication
+#             self._send_heartbeats()
+
+#             # wait for commit
+#             start = time.time()
+#             with self.commit_cond:
+#                 while self.commit_index < index:
+#                     remaining = CLIENT_APPLY_TIMEOUT - (time.time() - start)
+#                     if remaining <= 0:
+#                         logger.warning("AddTrack: commit timeout")
+#                         return queue_pb2.QueueResponse(message="Queued but not committed (timeout)", queue=self.music_queue)
+#                     self.commit_cond.wait(timeout=remaining)
+#             logger.info("AddTrack committed")
+#             return queue_pb2.QueueResponse(message="Queued", queue=self.music_queue)
+
+#     def RemoveTrack(self, request, context):
+#         with self.lock:
+#             logger.info("RemoveTrack called")
+#             if self.state != "LEADER":
+#                 return self._forward_to_leader(request, "RemoveTrack")
+
+#             entry = raft_pb2.LogEntry(term=self.current_term, command="REMOVE", data=request.SerializeToString())
+#             index = len(self.log)
+#             self.log.append(entry)
+#             logger.info(f"Leader appended REMOVE log[{index}]")
+
+#             self.match_index[NODE_ID] = index
+#             self.next_index[NODE_ID] = index + 1
+#             self._send_heartbeats()
+
+#             start = time.time()
+#             with self.commit_cond:
+#                 while self.commit_index < index:
+#                     remaining = CLIENT_APPLY_TIMEOUT - (time.time() - start)
+#                     if remaining <= 0:
+#                         logger.warning("RemoveTrack: commit timeout")
+#                         return queue_pb2.QueueResponse(message="Queued but not committed (timeout)", queue=self.music_queue)
+#                     self.commit_cond.wait(timeout=remaining)
+#             logger.info("RemoveTrack committed")
+#             return queue_pb2.QueueResponse(message="Removed", queue=self.music_queue)
+
+#     def GetQueue(self, request, context):
+#         with self.lock:
+#             return queue_pb2.QueueList(queue=self.music_queue)
+
+#     # Unused stubs - implement as needed
+#     def VoteTrack(self, request, context):
+#         return queue_pb2.QueueResponse()
+#     def GetMetadata(self, request, context):
+#         return queue_pb2.Track()
+#     def PlayNext(self, request, context):
+#         return queue_pb2.Track()
+#     def GetHistory(self, request, context):
+#         return queue_pb2.QueueList()
+
+#     def stop(self):
+#         self._stop.set()
+
+# # -------------------------
+# # Server bootstrap
+# # -------------------------
+# def serve():
+#     server = grpc.server(futures.ThreadPoolExecutor(max_workers=20))
+#     raft_server = RaftServer()
+#     queue_pb2_grpc.add_QueueServiceServicer_to_server(raft_server, server)
+#     raft_pb2_grpc.add_RaftServiceServicer_to_server(raft_server, server)
+#     bind = f"[::]:{PORT}"
+#     server.add_insecure_port(bind)
+#     logger.info(f"Starting gRPC server on {bind}")
+#     server.start()
+#     try:
+#         server.wait_for_termination()
+#     except KeyboardInterrupt:
+#         logger.info("Shutting down")
+#         raft_server.stop()
+#         server.stop(0)
+
+# if __name__ == "__main__":
+#     serve()
+
+
+
+
+
+
+
+
+
+
+

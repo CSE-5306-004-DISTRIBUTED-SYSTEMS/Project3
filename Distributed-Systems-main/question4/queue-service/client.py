@@ -6,7 +6,7 @@ import sys
 import os
 
 # HOST = 'nginx-grpc:50051'
-HOST = 'localhost:50051'
+HOST = 'localhost:50052'
 CLIENT_NODE_ID = int(os.environ.get("CLIENT_NODE_ID", "0"))
 
 def log_rpc_call(rpc_name, target_node_id):

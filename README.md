@@ -70,6 +70,10 @@ AddTrack response: message: "No Leader Elected Yet"
 
 ```
 
+
+
+`docker compose -f docker-compose.yml logs` to check logs
+
 Between node logs 
 ```
  Node 2 Election Timeout. Becoming CANDIDATE.
@@ -88,3 +92,6 @@ microservices-grpc-raft-node2-1  | Node 2 Election Timeout. Becoming CANDIDATE.
 
 
 
+## Reference
+- Gemini & ChatGPT 
+- https://renjieliu.gitbooks.io/consensus-algorithms-from-2pc-to-raft/content/index.htmlLinks 

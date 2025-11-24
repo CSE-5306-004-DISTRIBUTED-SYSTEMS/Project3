@@ -1,5 +1,0 @@
-locust
-python-socketio
-pymongo
-pandas     # <-- New: For data manipulation
-matplotlib # <-- New: For plotting

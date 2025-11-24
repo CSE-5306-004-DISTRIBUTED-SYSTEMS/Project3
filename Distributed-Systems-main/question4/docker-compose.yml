@@ -1,0 +1,145 @@
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+
+  nginx-grpc:
+    image: nginx:1.25-alpine
+    volumes:
+      - ./nginx-grpc.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - raft-node1
+      - raft-node2
+      - raft-node3
+      - raft-node4
+      - raft-node5
+    ports:
+      - "15051:50051"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+      
+
+  raft-node1:
+    build:
+      context: ./queue-service
+      dockerfile: Dockerfile
+    environment:
+      - NODE_ID=1
+      - PEERS=1=raft-node1:50051,2=raft-node2:50051,3=raft-node3:50051,4=raft-node4:50051,5=raft-node5:50051
+      - PYTHONUNBUFFERED=1
+      - START_PORT=50051
+      - PORT_RANGE=50
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    entrypoint: ["/app/entrypoint.sh"]
+    restart: unless-stopped
+    ports:
+      - "50051:50051"
+    depends_on:
+      - redis
+
+  raft-node2:
+    build:
+      context: ./queue-service
+      dockerfile: Dockerfile
+    environment:
+      - NODE_ID=2
+      - PEERS=1=raft-node1:50051,2=raft-node2:50051,3=raft-node3:50051,4=raft-node4:50051,5=raft-node5:50051
+      - PYTHONUNBUFFERED=1
+      - START_PORT=50051
+      - PORT_RANGE=50
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    entrypoint: ["/app/entrypoint.sh"]
+    restart: unless-stopped
+    ports:
+      - "50052:50051"
+    depends_on:
+      - redis
+
+  raft-node3:
+    build:
+      context: ./queue-service
+      dockerfile: Dockerfile
+    environment:
+      - NODE_ID=3
+      - PEERS=1=raft-node1:50051,2=raft-node2:50051,3=raft-node3:50051,4=raft-node4:50051,5=raft-node5:50051
+      - PYTHONUNBUFFERED=1
+      - START_PORT=50051
+      - PORT_RANGE=50
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    entrypoint: ["/app/entrypoint.sh"]
+    restart: unless-stopped
+    ports:
+      - "50053:50051"
+    depends_on:
+      - redis
+
+  raft-node4:
+    build:
+      context: ./queue-service
+      dockerfile: Dockerfile
+    environment:
+      - NODE_ID=4
+      - PEERS=1=raft-node1:50051,2=raft-node2:50051,3=raft-node3:50051,4=raft-node4:50051,5=raft-node5:50051
+      - PYTHONUNBUFFERED=1
+      - START_PORT=50051
+      - PORT_RANGE=50
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    entrypoint: ["/app/entrypoint.sh"]
+    restart: unless-stopped
+    ports:
+      - "50054:50051"
+    depends_on:
+      - redis
+
+  raft-node5:
+    build:
+      context: ./queue-service
+      dockerfile: Dockerfile
+    environment:
+      - NODE_ID=5
+      - PEERS=1=raft-node1:50051,2=raft-node2:50051,3=raft-node3:50051,4=raft-node4:50051,5=raft-node5:50051
+      - PYTHONUNBUFFERED=1
+      - START_PORT=50051
+      - PORT_RANGE=50
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    entrypoint: ["/app/entrypoint.sh"]
+    restart: unless-stopped
+    ports:
+      - "50055:50051"
+    depends_on:
+      - redis
+
+
+
+  test-runner:
+    build:
+      context: ./queue-service
+      dockerfile: Dockerfile
+    entrypoint: ["/app/test-runner.sh"]
+    volumes:
+      - ./tests:/app/tests
+      - ./queue-service/test-runner.sh:/app/test-runner.sh
+      - ./test_runner.py:/app/test_runner.py
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - START_PORT=50051
+      - PORT_RANGE=50
+      - PYTHONPATH=/app
+    depends_on:
+      - nginx-grpc
+      - redis
+    restart: "no"
+
