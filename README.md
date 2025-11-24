@@ -43,11 +43,23 @@ If all grpc-nodes have same picture, it will return global commit to delete it. 
 
 This is based on Group 15 -- Distributed music Queue System. 
 
+#### Question 3
 1. `cd Distributed-Systems-main`
 2. `cd microservices-grpc`
 3. `docker-compose up --build` create docker images
 4. `python queue-service/client.py add --id 123 --title "Retry" --artist "Me" --duration 100` to add data point 
 
+5. `docker compose -f docker-compose.yml logs` to check logs 
+
+
+#### Question 4
+1. `cd Distributed-Systems-main`
+2. `cd question4`
+3. `docker-compose up --build` create docker images
+
+4. `python queue-service/client.py add --id 8 --title "Forwarding Test" --artist "Test Case 3-2" --duration 180` to add data point 
+
+5. `docker compose -f docker-compose.yml logs` to check logs.
 
 if `client.py` does not work.  please `cd queue-service` generate `.proto` first 
 ```
@@ -62,11 +74,13 @@ python -m grpc_tools.protoc -I. --python_out=. --grpc_python_out=. raft.proto
 
 The below should show up
 ```
-AddTrack response: message: "Queued by Leader"
-
-Or 
-
-AddTrack response: message: "No Leader Elected Yet"
+AddTrack response: message: "Queued"
+queue {
+  id: "8"
+  title: "Forwarding Test"
+  artist: "Test Case 2-2"
+  duration: 180
+}
 
 ```
 
@@ -76,18 +90,28 @@ AddTrack response: message: "No Leader Elected Yet"
 
 Between node logs 
 ```
- Node 2 Election Timeout. Becoming CANDIDATE.
-microservices-grpc-raft-node2-1  | Node 2 sends RPC RequestVote to Node 1Node 2 sends RPC RequestVote to Node 3Node 2 sends RPC RequestVote to Node 4Node 2 sends RPC RequestVote to Node 5
-
-microservices-grpc-raft-node2-1  | Node 2 runs RPC RequestVote called by Node 4
-microservices-grpc-raft-node2-1  | Node 2 runs RPC RequestVote called by Node 1
-microservices-grpc-raft-node2-1  | Node 2 runs RPC AppendEntries called by Node 1
-microservices-grpc-raft-node2-1  | Node 2 runs RPC RequestVote called by Node 5
-microservices-grpc-raft-node2-1  | Node 2 runs RPC AppendEntries called by Node 1
-microservices-grpc-raft-node2-1  | Node 2 runs RPC RequestVote called by Node 4
-microservices-grpc-raft-node2-1  | Node 2 runs RPC RequestVote called by Node 3
-microservices-grpc-raft-node2-1  | Node 2 runs RPC AppendEntries called by Node 1
-microservices-grpc-raft-node2-1  | Node 2 Election Timeout. Becoming CANDIDATE.
+microservices-grpc-raft-node3-1  | [Node 3] 2025-11-24 02:22:03,525 INFO: Transition to FOLLOWER term=321
+microservices-grpc-raft-node3-1  | [Node 3] 2025-11-24 02:22:04,036 INFO: runs RPC RequestVote called by Node 2
+microservices-grpc-raft-node3-1  | [Node 3] 2025-11-24 02:22:04,491 INFO: runs RPC AppendEntries called by Node 4
+microservices-grpc-raft-node3-1  | [Node 3] 2025-11-24 02:22:04,492 INFO: runs RPC AppendEntries called by Node 1
+microservices-grpc-raft-node3-1  | [Node 3] 2025-11-24 02:22:05,201 INFO: Election timeout -> start election
+microservices-grpc-raft-node3-1  | [Node 3] 2025-11-24 02:22:05,201 INFO: Became CANDIDATE for term 322
+microservices-grpc-raft-node3-1  | [Node 3] 2025-11-24 02:22:05,202 INFO: sends RPC RequestVote to Node 1
+microservices-grpc-raft-node3-1  | [Node 3] 2025-11-24 02:22:05,203 INFO: sends RPC RequestVote to Node 2
+microservices-grpc-raft-node3-1  | [Node 3] 2025-11-24 02:22:05,204 INFO: sends RPC RequestVote to Node 4
+microservices-grpc-raft-node3-1  | [Node 3] 2025-11-24 02:22:05,204 INFO: sends RPC RequestVote to Node 5
+microservices-grpc-raft-node3-1  | [Node 3] 2025-11-24 02:22:05,211 INFO: Won election and became LEADER for term 322
+microservices-grpc-raft-node3-1  | [Node 3] 2025-11-24 02:22:05,212 INFO: sends RPC AppendEntries to Node 1
+microservices-grpc-raft-node3-1  | [Node 3] 2025-11-24 02:22:05,214 INFO: sends RPC AppendEntries to Node 2
+microservices-grpc-raft-node3-1  | [Node 3] 2025-11-24 02:22:05,216 INFO: sends RPC AppendEntries to Node 4
+microservices-grpc-raft-node3-1  | [Node 3] 2025-11-24 02:22:05,217 INFO: sends RPC AppendEntries to Node 5
+microservices-grpc-raft-node3-1  | [Node 3] 2025-11-24 02:22:05,514 INFO: runs RPC AppendEntries called by Node 4
+microservices-grpc-raft-node3-1  | [Node 3] 2025-11-24 02:22:05,518 INFO: runs RPC AppendEntries called by Node 1
+microservices-grpc-raft-node3-1  | [Node 3] 2025-11-24 02:22:05,568 INFO: runs RPC RequestVote called by Node 5
+microservices-grpc-raft-node3-1  | [Node 3] 2025-11-24 02:22:06,219 INFO: sends RPC AppendEntries to Node 1
+microservices-grpc-raft-node3-1  | [Node 3] 2025-11-24 02:22:06,221 INFO: sends RPC AppendEntries to Node 2
+microservices-grpc-raft-node3-1  | [Node 3] 2025-11-24 02:22:06,222 INFO: sends RPC AppendEntries to Node 4
+microservices-grpc-raft-node3-1  | [Node 3] 2025-11-24 02:22:06,224 INFO: sends RPC AppendEntries to Node 5
 ```
 
 
